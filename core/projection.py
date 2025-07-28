@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import open3d as o3d
 
 class ProjectionMixin:
     def project_no_clipping(self):
@@ -107,7 +108,7 @@ class ProjectionMixin:
         self.observations = projections
         return projections
     
-    def remove_occlusions_and_downsample(self, buffering_pixel_nb=(640, 480), buffer_tolerance = 0.05, show_lm_per_pixel_dist = [], voxel_size=0.02):
+    def remove_occlusions_and_downsample(self, buffering_pixel_nb=(640, 480), buffer_tolerance = 0.05, show_lm_per_pixel_dist = [], voxel_size=0.02, discard_unused_lm_and_cam=True):
         self.get_observations_Zbuffered(buffering_pixel_nb, buffer_tolerance, show_lm_per_pixel_dist)
 
         _ , _ , indices = self.pcd.voxel_down_sample_and_trace(
@@ -121,8 +122,9 @@ class ProjectionMixin:
 
         print("Downsampling landmarks")
         self.remove_landmarks(post_down_sampling_indices)
-        self.remove_unobserved_landmarks(minimum_observations=3)
-        self.remove_unseeing_cameras(minimum_observations=1)
+        if discard_unused_lm_and_cam:
+            self.remove_unobserved_landmarks(minimum_observations=3)
+            self.remove_unseeing_cameras(minimum_observations=1)
         
         return self.observations
 
@@ -157,21 +159,18 @@ class ProjectionMixin:
         if mask_or_indices.dtype == bool:
             if mask_or_indices.shape[0] != self.lm_nb:
                 raise TypeError(f"the boolean mask must be of size {self.lm_nb}. Got {len(mask_or_indices)}")
-            else:
-                indices = [idx for idx in range(self.lm_nb) if mask_or_indices[idx]]
         
-        
-        self.pcd = self.pcd.select_by_index(indices)
+        self.landmarks = self.landmarks[mask_or_indices, :]
+        new_pcd = o3d.geometry.PointCloud()
+        new_pcd.points = o3d.utility.Vector3dVector(self.landmarks[:, :3])
+        if self.colors is not None:
+            self.colors = self.colors[mask_or_indices, :]
+            new_pcd.colors = o3d.utility.Vector3dVector(self.colors)
+        self.pcd = new_pcd
 
         if self.observations is not None:
             self.observations = self.observations[:, mask_or_indices, :]
 
-        inhomogeneous_landmarks = np.asarray(self.pcd.points)
-        if self.colors is not None:
-            self.colors = self.pcd.colors
-        ones = np.ones((inhomogeneous_landmarks.shape[0],1))
-        landmarks_homogeneous = np.hstack((inhomogeneous_landmarks, ones))
-        self.landmarks = landmarks_homogeneous
         self.lm_nb = self.landmarks.shape[0]
 
         print(f"ToyDataset now contains {self.lm_nb} landmarks")
@@ -184,9 +183,8 @@ class ProjectionMixin:
 
         valid_mask = ~np.isnan(self.observations).any(axis=2)
         nb_observations_per_lm = np.sum(valid_mask, axis=0)
-        print(nb_observations_per_lm)
+
         lm_mask = nb_observations_per_lm >= minimum_observations
-        print(lm_mask)
 
         print(f"Removing landmarks observed less than {minimum_observations} times.")
         self.remove_landmarks(lm_mask)
